@@ -1,3 +1,12 @@
 __pycache__/
 .env
 *.pyc
+
+# Testes e lint
+.pytest_cache/
+.ruff_cache/
+test-results.xml
+
+# Ambiente virtual
+venv/
+.venv/
