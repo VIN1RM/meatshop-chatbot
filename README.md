@@ -1,6 +1,6 @@
 # 🥩 MeatShop Chatbot API
 
-**Versão:** 1.2.0  
+**Versão:** 1.1.0  
 **Data:** 21 de Agosto de 2026  
 **Autor:** Vinícius Rodrigues  
 

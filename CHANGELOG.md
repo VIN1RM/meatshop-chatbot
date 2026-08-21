@@ -11,10 +11,16 @@ e este projeto segue o [Versionamento Semântico](https://semver.org/lang/pt-BR/
 
 ---
 
-## [1.2.0] - 2026-08-21
-### Proteção contra abuso, conversa multi-turno e base de testes
+## [1.1.0] - 2026-08-21
+### Endurecimento para produção, proteção contra abuso, conversa multi-turno e base de testes
 
 ### Added
+- `.env.example` com as variáveis suportadas e comentário descritivo em cada uma
+- `ALLOWED_ORIGINS` para restringir as origens do CORS por ambiente
+- `LOG_LEVEL` para controlar a verbosidade dos logs
+- Validação de entrada em `POST /chat`: `message` entre 1 e 1000 caracteres (`422` fora da faixa)
+- Timeout explícito nas chamadas à Groq (5s de conexão, 30s de leitura)
+- Documentação de endpoints, variáveis de ambiente e execução local no README
 - **Suíte de testes** com 85 casos (`tests/`) cobrindo filtro, cascata de modelos, cache,
   rate limit, contrato HTTP e streaming. Sem chamada real à Groq (`httpx.MockTransport`) e
   sem `sleep` (relógio injetado), roda em segundos
@@ -36,30 +42,6 @@ e este projeto segue o [Versionamento Semântico](https://semver.org/lang/pt-BR/
 - `requirements-dev.txt` e `pyproject.toml` com configuração de ruff e pytest
 
 ### Changed
-- O filtro de domínio passou a considerar os 2 turnos anteriores: follow-ups sem palavra-chave
-  própria ("e para 10 pessoas?") eram recusados antes de chegar à IA
-- `normalize()` promovido a função pública em `app/filter.py`, reaproveitado como chave de
-  cache — "Picanha?" e "picanha" passam a compartilhar a mesma entrada
-
-### Security
-- Endpoint público sem qualquer limite era um proxy de LLM gratuito para quem descobrisse a URL,
-  com o custo debitado do projeto
-- Headers do CORS ampliados para incluir `X-API-Key`, mantendo a lista restritiva
-
----
-
-## [1.1.0] - 2026-08-21
-### Endurecimento da API para produção
-
-### Added
-- `.env.example` com as variáveis suportadas e comentário descritivo em cada uma
-- `ALLOWED_ORIGINS` para restringir as origens do CORS por ambiente
-- `LOG_LEVEL` para controlar a verbosidade dos logs
-- Validação de entrada em `POST /chat`: `message` entre 1 e 1000 caracteres (`422` fora da faixa)
-- Timeout explícito nas chamadas à Groq (5s de conexão, 30s de leitura)
-- Documentação de endpoints, variáveis de ambiente e execução local no README
-
-### Changed
 - `requests` substituído por `httpx` com cliente assíncrono e pool de conexões reaproveitado
   entre requisições, removendo o limite de concorrência do threadpool do FastAPI
 - Fallback entre modelos agora avança apenas em falhas transitórias (rede, `408`, `409`, `429`,
@@ -71,6 +53,10 @@ e este projeto segue o [Versionamento Semântico](https://semver.org/lang/pt-BR/
 - Falha ao gerar resposta agora retorna `503` mantendo o contrato `{"response": "..."}`,
   permitindo retry do cliente em vez de `200` com mensagem de erro ou `500` sem tratamento
 - Dependências fixadas por versão compatível (`~=`) em `requirements.txt`
+- O filtro de domínio passou a considerar os 2 turnos anteriores: follow-ups sem palavra-chave
+  própria ("e para 10 pessoas?") eram recusados antes de chegar à IA
+- `normalize()` promovido a função pública em `app/filter.py`, reaproveitado como chave de
+  cache — "Picanha?" e "picanha" passam a compartilhar a mesma entrada
 
 ### Fixed
 - Exceção de rede na chamada à Groq resultava em `500` sem tratamento
@@ -82,6 +68,9 @@ e este projeto segue o [Versionamento Semântico](https://semver.org/lang/pt-BR/
 - `print` da resposta completa da IA substituído por `logging` estruturado que não registra
   conteúdo do usuário nem corpo da resposta
 - Métodos e headers do CORS restringidos ao que a API realmente usa
+- Endpoint público sem qualquer limite era um proxy de LLM gratuito para quem descobrisse a URL,
+  com o custo debitado do projeto
+- Headers do CORS ampliados para incluir `X-API-Key`, mantendo a lista restritiva
 
 ---
 
