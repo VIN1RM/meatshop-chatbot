@@ -102,16 +102,19 @@ STEMS = (
 )
 
 
-def _normalize(text: str) -> str:
-    """Minúsculas, sem acentos, pontuação virando espaço."""
+def normalize(text: str) -> str:
+    """Minúsculas, sem acentos, pontuação virando espaço.
+
+    Também serve de chave de cache: "Picanha?" e "picanha" viram a mesma string.
+    """
     decomposed = unicodedata.normalize("NFD", text.lower())
     stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
-    return re.sub(r"[^a-z0-9]+", " ", stripped)
+    return re.sub(r"[^a-z0-9]+", " ", stripped).strip()
 
 
 def _phrase(term: str) -> str:
     """Expressão de várias palavras tolerante a espaçamento e hífen."""
-    return r"\s+".join(re.escape(word) for word in _normalize(term).split())
+    return r"\s+".join(re.escape(word) for word in normalize(term).split())
 
 
 _PATTERN = re.compile(
@@ -125,4 +128,4 @@ _PATTERN = re.compile(
 
 
 def is_meat_related(text: str) -> bool:
-    return bool(_PATTERN.search(_normalize(text)))
+    return bool(_PATTERN.search(normalize(text)))

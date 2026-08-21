@@ -11,6 +11,43 @@ e este projeto segue o [Versionamento Semântico](https://semver.org/lang/pt-BR/
 
 ---
 
+## [1.2.0] - 2026-08-21
+### Proteção contra abuso, conversa multi-turno e base de testes
+
+### Added
+- **Suíte de testes** com 85 casos (`tests/`) cobrindo filtro, cascata de modelos, cache,
+  rate limit, contrato HTTP e streaming. Sem chamada real à Groq (`httpx.MockTransport`) e
+  sem `sleep` (relógio injetado), roda em segundos
+- **Pipeline de CI** (`.github/workflows/ci.yml`) com `ruff check` e `pytest` em todo push e PR
+  para `main` e `develop`, usando apenas actions oficiais
+- **Rate limit por IP** com janela deslizante em memória (`app/ratelimit.py`), respondendo
+  `429` com header `Retry-After`. Configurável por `RATE_LIMIT_REQUESTS` e
+  `RATE_LIMIT_WINDOW_SECONDS`
+- **Credencial opcional** no header `X-API-Key`, ativada por `API_KEY`, com comparação em
+  tempo constante. Desligada por padrão
+- **Conversa multi-turno**: campo `history` opcional em `POST /chat`. O servidor segue sem
+  estado — o histórico vem do app e é validado (6 mensagens, 6000 caracteres somados)
+- **Endpoint `POST /chat/stream`** com resposta em SSE, reduzindo a latência percebida.
+  Fallback entre modelos só antes do primeiro texto emitido, para não duplicar conteúdo
+- **Cache de respostas** com TTL e descarte do menos usado (`app/cache.py`), aplicado a
+  perguntas sem histórico. Configurável por `CACHE_TTL_SECONDS` e `CACHE_MAX_ENTRIES`
+- **Log de custo por chamada**: modelo, latência e tokens (prompt, completion, total),
+  além de `cache hit` para medir a taxa de acerto
+- `requirements-dev.txt` e `pyproject.toml` com configuração de ruff e pytest
+
+### Changed
+- O filtro de domínio passou a considerar os 2 turnos anteriores: follow-ups sem palavra-chave
+  própria ("e para 10 pessoas?") eram recusados antes de chegar à IA
+- `normalize()` promovido a função pública em `app/filter.py`, reaproveitado como chave de
+  cache — "Picanha?" e "picanha" passam a compartilhar a mesma entrada
+
+### Security
+- Endpoint público sem qualquer limite era um proxy de LLM gratuito para quem descobrisse a URL,
+  com o custo debitado do projeto
+- Headers do CORS ampliados para incluir `X-API-Key`, mantendo a lista restritiva
+
+---
+
 ## [1.1.0] - 2026-08-21
 ### Endurecimento da API para produção
 
