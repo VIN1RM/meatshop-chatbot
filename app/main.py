@@ -3,6 +3,7 @@ import logging
 import math
 import os
 import secrets
+import uuid
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -12,31 +13,30 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.chatbot import (
     ChatUnavailableError,
+    UnsafeInputError,
     create_client,
+    generate_recipe_draft,
     get_response,
     stream_response,
 )
 from app.ratelimit import SlidingWindowRateLimiter
-from app.schemas import ChatRequest, ChatResponse
+from app.schemas import ChatRequest, ChatResponse, RecipeDraftRequest, RecipeDraftResponse
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 # Em produção, restrinja a origem (ex: ALLOWED_ORIGINS=https://app.meatshop.com.br).
 ALLOWED_ORIGINS = [
-    origin.strip()
-    for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")
-    if origin.strip()
+    origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "").split(",") if origin.strip()
 ]
 
-# Segredo compartilhado com o app. Vazio desliga a checagem.
-# Um segredo embutido no app é extraível do pacote: barra abuso casual, não atacante
-# dedicado. A proteção de verdade é validar o token do usuário logado no MeatShop.
+# API_KEY permanece apenas por compatibilidade. SERVICE_API_KEY é o contrato recomendado
+# entre o backend MeatShop e este serviço; nenhuma das duas deve ir para o app ou painel.
 API_KEY = os.getenv("API_KEY", "")
+SERVICE_API_KEY = os.getenv("SERVICE_API_KEY", "")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
-UNAVAILABLE_MESSAGE = (
-    "Não consegui responder agora. Tente novamente em alguns instantes."
-)
+UNAVAILABLE_MESSAGE = "Não consegui responder agora. Tente novamente em alguns instantes."
 
 rate_limiter = SlidingWindowRateLimiter(
     max_requests=int(os.getenv("RATE_LIMIT_REQUESTS", "20")),
@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
         yield
 
 
-app = FastAPI(title="MeatShop Chatbot API", version="1.2.0", lifespan=lifespan)
+app = FastAPI(title="MeatShop Chatbot API", version="3.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,12 +59,25 @@ app.add_middleware(
     # A API não usa cookies nem sessão; com credentials=True o wildcard seria inválido.
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "X-API-Key"],
+    allow_headers=["Content-Type", "X-API-Key", "X-Service-Key", "X-Request-ID", "X-MeatShop-User"],
 )
+
+
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    supplied = request.headers.get("x-request-id", "").strip()
+    request_id = supplied[:64] if supplied else str(uuid.uuid4())
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 def _client_key(request: Request) -> str:
     """IP do cliente conforme o proxy do Render. Ver ressalvas em app/ratelimit.py."""
+    user_id = request.headers.get("x-meatshop-user", "").strip()
+    if user_id:
+        return f"user:{user_id[:64]}"
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         return forwarded.split(",")[0].strip()
@@ -73,10 +86,15 @@ def _client_key(request: Request) -> str:
 
 def require_api_key(
     x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    x_service_key: Annotated[str | None, Header(alias="X-Service-Key")] = None,
 ) -> None:
-    if not API_KEY:
+    expected = SERVICE_API_KEY or API_KEY
+    if not expected:
+        if ENVIRONMENT == "production":
+            raise HTTPException(status_code=503, detail="Credencial interna não configurada.")
         return
-    if x_api_key is None or not secrets.compare_digest(x_api_key, API_KEY):
+    supplied = x_service_key or x_api_key
+    if supplied is None or not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Credencial inválida.")
 
 
@@ -101,21 +119,64 @@ async def chat_unavailable_handler(request: Request, exc: ChatUnavailableError):
     """Mantém o contrato {"response": ...} para o app, mas sinaliza 503 para retry."""
     return JSONResponse(
         status_code=503,
-        content=ChatResponse(response=UNAVAILABLE_MESSAGE).model_dump(),
+        content=ChatResponse(
+            response=UNAVAILABLE_MESSAGE,
+            request_id=request.state.request_id,
+        ).model_dump(),
+    )
+
+
+@app.exception_handler(UnsafeInputError)
+async def unsafe_input_handler(request: Request, exc: UnsafeInputError):
+    return JSONResponse(
+        status_code=400,
+        content={
+            "code": "AI_UNSAFE_INPUT",
+            "detail": "A solicitação contém instruções que não podem ser processadas.",
+            "request_id": request.state.request_id,
+        },
     )
 
 
 @app.get("/")
 def root():
-    return {"status": "MeatShop Chatbot rodando 🚀"}
+    return {"status": "MeatShop Chatbot rodando 🚀", "version": app.version}
+
+
+@app.get("/health/live")
+def health_live():
+    return {"status": "ok", "version": app.version}
+
+
+@app.get("/health/ready")
+def health_ready():
+    missing = []
+    if not os.getenv("GROQ_API_KEY"):
+        missing.append("GROQ_API_KEY")
+    if ENVIRONMENT == "production" and not (SERVICE_API_KEY or API_KEY):
+        missing.append("SERVICE_API_KEY")
+    if missing:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "missing": missing},
+        )
+    return {"status": "ready", "version": app.version}
 
 
 @app.post("/chat", response_model=ChatResponse, dependencies=PROTECTED)
 async def chat(req: ChatRequest, request: Request):
-    resposta = await get_response(
-        request.app.state.http_client, req.message, req.history
-    )
-    return ChatResponse(response=resposta)
+    resposta = await get_response(request.app.state.http_client, req.message, req.history)
+    return ChatResponse(response=resposta, request_id=request.state.request_id)
+
+
+@app.post(
+    "/recipe-drafts",
+    response_model=RecipeDraftResponse,
+    dependencies=PROTECTED,
+)
+async def recipe_draft(req: RecipeDraftRequest, request: Request):
+    draft = await generate_recipe_draft(request.app.state.http_client, req)
+    return RecipeDraftResponse(draft=draft, request_id=request.state.request_id)
 
 
 @app.post("/chat/stream", dependencies=PROTECTED)

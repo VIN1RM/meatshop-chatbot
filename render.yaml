@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: meatshop-chatbot
+    runtime: docker
+    plan: starter
+    branch: develop
+    autoDeployTrigger: checksPass
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health/ready
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SERVICE_API_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: ''
+      - key: RATE_LIMIT_REQUESTS
+        value: '20'
+      - key: RATE_LIMIT_WINDOW_SECONDS
+        value: '60'
+      - key: CACHE_TTL_SECONDS
+        value: '3600'
+      - key: CACHE_MAX_ENTRIES
+        value: '500'
+      - key: MAX_COMPLETION_TOKENS
+        value: '800'
+      - key: TEMPERATURE
+        value: '0.25'
+      - key: RECIPE_DRAFT_MODEL
+        value: openai/gpt-oss-20b
+      - key: LOG_LEVEL
+        value: INFO

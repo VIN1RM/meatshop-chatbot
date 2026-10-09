@@ -18,9 +18,7 @@ def api(handler=None):
     """TestClient com o lifespan ativo e, opcionalmente, a Groq simulada."""
     with TestClient(app) as client:
         if handler is not None:
-            app.state.http_client = httpx.AsyncClient(
-                transport=httpx.MockTransport(handler)
-            )
+            app.state.http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         yield client
 
 
@@ -53,7 +51,10 @@ def test_chat_responde_no_contrato():
     with api(groq_ok) as client:
         resposta = client.post("/chat", json={"message": "qual a melhor picanha?"})
     assert resposta.status_code == 200
-    assert resposta.json() == {"response": "resposta ok"}
+    body = resposta.json()
+    assert body["response"] == "resposta ok"
+    assert body["request_id"]
+    assert resposta.headers["X-Request-ID"] == body["request_id"]
 
 
 def test_fora_do_dominio_responde_200_com_recusa():
@@ -152,9 +153,7 @@ def test_api_key_exigida_quando_configurada(monkeypatch):
     monkeypatch.setattr(main, "API_KEY", "segredo")
     with api(groq_ok) as client:
         sem_header = client.post("/chat", json={"message": "picanha"})
-        errada = client.post(
-            "/chat", json={"message": "picanha"}, headers={"X-API-Key": "outra"}
-        )
+        errada = client.post("/chat", json={"message": "picanha"}, headers={"X-API-Key": "outra"})
         correta = client.post(
             "/chat", json={"message": "picanha"}, headers={"X-API-Key": "segredo"}
         )
@@ -162,6 +161,63 @@ def test_api_key_exigida_quando_configurada(monkeypatch):
     assert sem_header.status_code == 401
     assert errada.status_code == 401
     assert correta.status_code == 200
+
+
+def test_service_key_e_aceita_para_comunicacao_interna(monkeypatch):
+    monkeypatch.setattr(main, "SERVICE_API_KEY", "segredo-interno")
+    with api(groq_ok) as client:
+        resposta = client.post(
+            "/chat",
+            json={"message": "picanha"},
+            headers={"X-Service-Key": "segredo-interno"},
+        )
+    assert resposta.status_code == 200
+
+
+def test_readiness_detecta_configuracao_ausente(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setattr(main, "ENVIRONMENT", "production")
+    monkeypatch.setattr(main, "SERVICE_API_KEY", "")
+    monkeypatch.setattr(main, "API_KEY", "")
+    with api() as client:
+        resposta = client.get("/health/ready")
+    assert resposta.status_code == 503
+    assert set(resposta.json()["missing"]) == {"GROQ_API_KEY", "SERVICE_API_KEY"}
+
+
+def test_recipe_draft_retorna_json_validado():
+    draft = {
+        "title": "Picanha com ervas",
+        "description": "Rascunho para revisão.",
+        "tag": "Bovina",
+        "ingredients": [{"name": "Picanha", "quantity": "1 kg", "tip": None}],
+        "steps": [{"step_number": 1, "description": "Asse com segurança.", "tip": None}],
+        "products": [{"product_id": 7, "call_to_action": "Confira a picanha."}],
+        "safety_notice": "Use termômetro culinário.",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["response_format"]["type"] == "json_schema"
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps(draft)}}]},
+        )
+
+    with api(handler) as client:
+        resposta = client.post(
+            "/recipe-drafts",
+            json={
+                "brief": "picanha com ervas",
+                "servings": 4,
+                "products": [
+                    {"id": 7, "name": "Picanha", "unit_of_measure": "kg"},
+                ],
+            },
+        )
+    assert resposta.status_code == 200
+    assert resposta.json()["draft"] == draft
 
 
 def test_cors_nao_envia_allow_credentials():
@@ -184,9 +240,7 @@ def test_stream_entrega_eventos_sse():
     assert resposta.headers["content-type"].startswith("text/event-stream")
 
     eventos = [
-        linha[len("data: ") :]
-        for linha in resposta.text.splitlines()
-        if linha.startswith("data: ")
+        linha[len("data: ") :] for linha in resposta.text.splitlines() if linha.startswith("data: ")
     ]
     assert eventos[-1] == "[DONE]"
 

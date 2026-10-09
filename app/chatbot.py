@@ -11,8 +11,9 @@ from dotenv import load_dotenv
 
 from app.cache import TTLCache
 from app.filter import is_meat_related, normalize
-from app.prompt import SYSTEM_PROMPT
-from app.schemas import Message
+from app.prompt import PROMPT_VERSION, RECIPE_DRAFT_PROMPT, SYSTEM_PROMPT
+from app.safety import SAFETY_REFUSAL, is_prompt_injection, redact_sensitive
+from app.schemas import Message, RecipeDraft, RecipeDraftRequest
 
 load_dotenv()
 
@@ -34,6 +35,9 @@ OFF_TOPIC_MESSAGE = (
 )
 
 TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0)
+MAX_COMPLETION_TOKENS = int(os.getenv("MAX_COMPLETION_TOKENS", "800"))
+TEMPERATURE = float(os.getenv("TEMPERATURE", "0.25"))
+RECIPE_DRAFT_MODEL = os.getenv("RECIPE_DRAFT_MODEL", "openai/gpt-oss-20b")
 
 # Falhas do modelo/infra: vale tentar o próximo modelo da lista.
 # O que ficou de fora (401, 403, 400, 422) é erro nosso — repetir só desperdiça chamada.
@@ -52,6 +56,14 @@ class ChatUnavailableError(RuntimeError):
     """Nenhum modelo conseguiu responder."""
 
 
+class InvalidModelResponseError(ChatUnavailableError):
+    """O provedor respondeu, mas fora do contrato validado."""
+
+
+class UnsafeInputError(ValueError):
+    """A entrada tentou alterar regras internas ou carregar instruções hostis."""
+
+
 def create_client() -> httpx.AsyncClient:
     """Cliente HTTP com pool de conexões, gerenciado pelo lifespan da aplicação."""
     return httpx.AsyncClient(timeout=TIMEOUT)
@@ -64,14 +76,21 @@ def _headers() -> dict[str, str]:
     }
 
 
-def _payload(
-    model: str, user_input: str, history: Sequence[Message], stream: bool
-) -> dict:
+def _payload(model: str, user_input: str, history: Sequence[Message], stream: bool) -> dict:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages += [{"role": msg.role, "content": msg.content} for msg in history]
-    messages.append({"role": "user", "content": user_input})
+    messages += [
+        {"role": msg.role, "content": redact_sensitive(msg.content)}
+        for msg in history
+        if not is_prompt_injection(msg.content)
+    ]
+    messages.append({"role": "user", "content": redact_sensitive(user_input)})
 
-    payload = {"model": model, "messages": messages}
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_completion_tokens": MAX_COMPLETION_TOKENS,
+        "temperature": TEMPERATURE,
+    }
     if stream:
         payload["stream"] = True
     return payload
@@ -88,8 +107,22 @@ def _in_domain(user_input: str, history: Sequence[Message]) -> bool:
 
 
 def _cache_key(user_input: str, history: Sequence[Message]) -> str | None:
-    """Só faz cache de pergunta isolada: com histórico a repetição exata é improvável."""
-    return None if history else normalize(user_input)
+    """Cacheia somente perguntas genéricas sem indícios de dados pessoais."""
+    normalized = normalize(user_input)
+    sensitive_markers = (
+        "cpf",
+        "telefone",
+        "endereco",
+        "pedido",
+        "entrega",
+        "alerg",
+        "doenca",
+        "gravida",
+        "medic",
+    )
+    if history or len(normalized) > 240 or any(item in normalized for item in sensitive_markers):
+        return None
+    return f"{PROMPT_VERSION}:{normalized}"
 
 
 def _log_usage(model: str, started: float, payload: dict) -> None:
@@ -115,6 +148,8 @@ async def get_response(
     user_input: str,
     history: Sequence[Message] = (),
 ) -> str:
+    if is_prompt_injection(user_input):
+        return SAFETY_REFUSAL
     if not _in_domain(user_input, history):
         return OFF_TOPIC_MESSAGE
 
@@ -147,6 +182,7 @@ async def get_response(
                 logger.error("Resposta em formato inesperado de %s", model)
                 continue
 
+            content = redact_sensitive(content)
             _log_usage(model, started, payload)
             if key is not None:
                 RESPONSE_CACHE.set(key, content)
@@ -163,6 +199,71 @@ async def get_response(
         break
 
     raise ChatUnavailableError
+
+
+async def generate_recipe_draft(
+    client: httpx.AsyncClient,
+    request: RecipeDraftRequest,
+) -> RecipeDraft:
+    """Gera JSON estrito e rejeita qualquer produto fora do catálogo autorizado."""
+    if is_prompt_injection(request.brief):
+        raise UnsafeInputError
+    _check_ready()
+    catalog = [product.model_dump() for product in request.products]
+    user_payload = {
+        "brief": redact_sensitive(request.brief),
+        "servings": request.servings,
+        "tag": request.tag,
+        "authorized_catalog": catalog,
+    }
+    payload = {
+        "model": RECIPE_DRAFT_MODEL,
+        "messages": [
+            {"role": "system", "content": RECIPE_DRAFT_PROMPT},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        ],
+        "temperature": 0.2,
+        "max_completion_tokens": max(MAX_COMPLETION_TOKENS, 1600),
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "meatshop_recipe_draft",
+                "strict": True,
+                "schema": RecipeDraft.model_json_schema(),
+            },
+        },
+    }
+    started = time.monotonic()
+    try:
+        response = await client.post(GROQ_URL, headers=_headers(), json=payload)
+    except httpx.HTTPError as exc:
+        logger.warning("Falha de rede ao gerar rascunho: %s", type(exc).__name__)
+        raise ChatUnavailableError from exc
+
+    if response.status_code != httpx.codes.OK:
+        logger.warning("Falha ao gerar rascunho (HTTP %s)", response.status_code)
+        raise ChatUnavailableError
+
+    try:
+        body = response.json()
+        content = body["choices"][0]["message"]["content"]
+        draft = RecipeDraft.model_validate_json(content)
+    except (ValueError, KeyError, IndexError) as exc:
+        logger.error("Rascunho retornado fora do contrato")
+        raise InvalidModelResponseError from exc
+
+    allowed_ids = {product.id for product in request.products}
+    if any(product.product_id not in allowed_ids for product in draft.products):
+        logger.error("Rascunho tentou associar produto fora do catálogo autorizado")
+        raise InvalidModelResponseError
+
+    expected_steps = list(range(1, len(draft.steps) + 1))
+    if [step.step_number for step in draft.steps] != expected_steps:
+        logger.error("Rascunho retornou numeração de passos inválida")
+        raise InvalidModelResponseError
+
+    _log_usage(RECIPE_DRAFT_MODEL, started, body)
+    return draft
 
 
 def _parse_sse_delta(line: str) -> str | None:
@@ -191,6 +292,9 @@ async def stream_response(
     history: Sequence[Message] = (),
 ) -> AsyncIterator[str]:
     """Gera a resposta em pedaços. O fallback só vale antes do primeiro texto emitido."""
+    if is_prompt_injection(user_input):
+        yield SAFETY_REFUSAL
+        return
     if not _in_domain(user_input, history):
         yield OFF_TOPIC_MESSAGE
         return
@@ -238,20 +342,22 @@ async def stream_response(
             if partes:
                 # Reiniciar com outro modelo duplicaria o texto já enviado ao cliente.
                 logger.error("Stream interrompido após envio parcial em %s", model)
-                return
+                raise ChatUnavailableError from exc
             continue
 
         # A Groq não devolve `usage` no modo stream sem `stream_options`, que não foi
         # validado contra a API — por ora registramos só latência e volume.
-        logger.info(
-            "groq stream ok model=%s latency_ms=%d chunks=%d chars=%d",
-            model,
-            (time.monotonic() - started) * 1000,
-            len(partes),
-            sum(len(parte) for parte in partes),
-        )
-        if partes and key is not None:
-            RESPONSE_CACHE.set(key, "".join(partes))
-        return
+        if partes:
+            logger.info(
+                "groq stream ok model=%s latency_ms=%d chunks=%d chars=%d",
+                model,
+                (time.monotonic() - started) * 1000,
+                len(partes),
+                sum(len(parte) for parte in partes),
+            )
+            if key is not None:
+                RESPONSE_CACHE.set(key, "".join(partes))
+            return
+        logger.warning("Modelo %s encerrou o stream sem conteúdo", model)
 
     raise ChatUnavailableError
