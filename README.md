@@ -1,8 +1,10 @@
 # 🥩 MeatShop Chatbot API
 
-**Versão:** 1.1.0  
-**Data:** 21 de Agosto de 2026  
-**Autor:** Vinícius Rodrigues  
+**Versão:** 3.0.0
+
+**Data:** 9 de outubro de 2026
+
+**Autor:** Vinícius Rodrigues
 
 API de chatbot inteligente especializada em carnes, integrada ao app MeatShop.
 
@@ -35,7 +37,7 @@ Fornecer respostas inteligentes e contextualizadas para usuários do app MeatSho
 ## 🏗️ Arquitetura
 
 
-Flutter App → Rate limit → Filtro de domínio → Cache → Groq API → Resposta
+Mobile/Painel → Backend MeatShop autenticado → Chatbot privado → Groq API
 
 
 Cada camada existe para evitar a chamada seguinte, que é a única que custa dinheiro:
@@ -50,9 +52,11 @@ Cada camada existe para evitar a chamada seguinte, que é a única que custa din
 O fallback entre modelos só avança em falhas transitórias (rede, `429`, `5xx`, modelo
 descontinuado); erros de credencial ou de payload interrompem na primeira tentativa.
 
-**O servidor é sem estado.** O histórico da conversa vem do app em cada requisição —
-não há sessão nem banco. Rate limit e cache vivem no processo: com mais de uma instância
-no Render, cada uma mantém o seu (ver ressalvas nos módulos).
+O serviço aceita somente chamadas internas autenticadas em produção. JWT, permissões de
+unidade, auditoria e limites por usuário pertencem ao backend principal. O chatbot não
+recebe credenciais do cliente nem acesso direto ao banco MeatShop.
+O histórico de conversa também pertence ao backend principal: fica no PostgreSQL por sete
+dias e somente os últimos turnos necessários são enviados a este serviço, que segue sem estado.
 
 ---
 
@@ -82,9 +86,15 @@ https://meatshop-chatbot.onrender.com
 ### `GET /`
 Healthcheck.
 
+### `GET /health/live` e `GET /health/ready`
+
+Liveness do processo e prontidão de credenciais. Em produção, readiness exige
+`GROQ_API_KEY` e `SERVICE_API_KEY`.
+
 ### `POST /chat`
 
-**Request** — `history` é opcional; envie os turnos anteriores para manter contexto.
+**Request interno** — `history` é opcional e é preenchido exclusivamente pelo backend
+principal com os turnos autorizados do usuário autenticado.
 ```json
 {
   "message": "e para 10 pessoas?",
@@ -133,6 +143,12 @@ data: [DONE]
 Em falha, o evento é `{"error": "..."}` seguido de `[DONE]`. Como a resposta já começou,
 o status HTTP permanece `200` — o cliente deve tratar o evento de erro.
 
+### `POST /recipe-drafts`
+
+Gera rascunho de receita com JSON Schema estrito. O catálogo autorizado é fornecido pelo
+backend e a resposta é rejeitada se associar um `product_id` que não estava na solicitação.
+O endpoint não salva nem publica receitas.
+
 ---
 
 ## 🔐 Variáveis de ambiente
@@ -144,15 +160,19 @@ Copie `.env.example` para `.env` e preencha:
 | `GROQ_API_KEY` | Sim | — | Chave da API da Groq |
 | `ALLOWED_ORIGINS` | Não | `*` | Origens do CORS separadas por vírgula |
 | `API_KEY` | Não | vazio | Segredo exigido no header `X-API-Key`. Vazio desliga a checagem |
+| `SERVICE_API_KEY` | Produção | vazio | Segredo interno exigido no header `X-Service-Key` |
+| `ENVIRONMENT` | Não | `development` | Em `production`, impede chamadas sem credencial interna |
 | `RATE_LIMIT_REQUESTS` | Não | `20` | Requisições permitidas por janela |
 | `RATE_LIMIT_WINDOW_SECONDS` | Não | `60` | Duração da janela |
 | `CACHE_TTL_SECONDS` | Não | `3600` | Vida das respostas em cache. `0` desliga |
 | `CACHE_MAX_ENTRIES` | Não | `500` | Máximo de respostas em cache |
 | `LOG_LEVEL` | Não | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `MAX_COMPLETION_TOKENS` | Não | `800` | Limite de saída do chat |
+| `TEMPERATURE` | Não | `0.25` | Aleatoriedade das respostas |
+| `RECIPE_DRAFT_MODEL` | Não | `openai/gpt-oss-20b` | Modelo de saída estruturada |
 
-> ⚠️ `API_KEY` é um segredo compartilhado com o app e **é extraível do pacote instalado**.
-> Serve para barrar abuso casual, não um atacante dedicado. A proteção adequada é validar
-> o token do usuário logado no MeatShop.
+`SERVICE_API_KEY` pertence somente ao backend e ao chatbot. Nunca a inclua no mobile,
+painel, repositório ou variável `NEXT_PUBLIC_*`.
 
 ---
 
@@ -173,7 +193,7 @@ Documentação interativa em `http://127.0.0.1:8000/docs`.
 
 ```bash
 ruff check .    # lint
-pytest          # 85 testes
+pytest          # testes funcionais sem chamadas reais à Groq
 ```
 
 Cobertura da suíte:

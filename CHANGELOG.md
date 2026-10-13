@@ -9,6 +9,30 @@ e este projeto segue o [Versionamento Semântico](https://semver.org/lang/pt-BR/
 
 ## [Projeto ainda não publicado]
 
+## [3.0.0] - 2026-10-09
+### Integração segura com backend e copiloto de receitas
+
+### Added
+- Autenticação interna por `X-Service-Key` e identidade técnica por usuário.
+- Request ID em headers e respostas.
+- Healthchecks separados de liveness e readiness.
+- Geração de rascunhos com JSON Schema, catálogo autorizado e validação de produtos.
+- Limites explícitos de tokens e temperatura.
+- Proteção local contra prompt injection e remoção de CPF, telefone e e-mail.
+- Dockerfile, `.dockerignore` e manifesto Render.
+
+### Changed
+- Prompt compacto, versionado e com orientações alimentares corrigidas.
+- Cache restrito a perguntas genéricas, sem histórico ou marcadores sensíveis.
+- CORS fechado por padrão e credencial obrigatória em produção.
+- Streams vazios ou interrompidos deixam de ser tratados como sucesso.
+- O histórico multi-turno passa a ser recebido exclusivamente do backend principal, que o mantém no PostgreSQL por sete dias; o chatbot permanece sem estado.
+
+### Security
+- Mobile e painel não devem chamar este serviço diretamente.
+- Entradas e saídas estruturadas são validadas antes de retornar ao backend.
+- Nenhum conteúdo de usuário é incluído nos logs da aplicação.
+
 ---
 
 ## [1.1.0] - 2026-08-21
