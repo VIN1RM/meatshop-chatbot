@@ -5,6 +5,7 @@ from contextlib import contextmanager
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app import chatbot, main
@@ -246,6 +247,38 @@ def test_stream_entrega_eventos_sse():
 
     texto = "".join(json.loads(evento)["delta"] for evento in eventos[:-1])
     assert texto == "resposta ok"
+
+
+def test_stream_remove_dados_pessoais_da_saida():
+    def handler(request: httpx.Request) -> httpx.Response:
+        corpo = (
+            'data: {"choices":[{"delta":{"content":"Envie para teste@example.com"}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, content=corpo.encode())
+
+    with api(handler) as client:
+        resposta = client.post("/chat/stream", json={"message": "qual a melhor picanha?"})
+
+    assert "teste@example.com" not in resposta.text
+    assert "[e-mail removido]" in resposta.text
+
+
+def test_docs_disponiveis_fora_de_producao():
+    with api() as client:
+        assert client.get("/docs").status_code == 200
+        assert client.get("/openapi.json").status_code == 200
+
+
+@pytest.mark.parametrize("environment", ["production", " Production "])
+def test_docs_desligados_em_producao(environment):
+    urls = main.docs_urls(environment)
+    assert urls == {"docs_url": None, "redoc_url": None, "openapi_url": None}
+
+    with TestClient(FastAPI(**urls)) as client:
+        assert client.get("/docs").status_code == 404
+        assert client.get("/redoc").status_code == 404
+        assert client.get("/openapi.json").status_code == 404
 
 
 def test_stream_reporta_falha_como_evento(monkeypatch):

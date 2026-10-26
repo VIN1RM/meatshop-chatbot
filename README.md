@@ -44,7 +44,7 @@ Cada camada existe para evitar a chamada seguinte, que é a única que custa din
 
 | Camada | O que faz | Arquivo |
 |---|---|---|
-| Rate limit | Janela deslizante por IP; `429` acima do limite | `app/ratelimit.py` |
+| Rate limit | Janela deslizante por usuário (header `X-MeatShop-User`, enviado pelo backend) com fallback para o IP; `429` acima do limite | `app/ratelimit.py` |
 | Filtro de domínio | Casa palavras inteiras sobre texto normalizado (sem acentos nem pontuação). Sem correspondência, responde local | `app/filter.py` |
 | Cache | Perguntas repetidas sem histórico são servidas da memória | `app/cache.py` |
 | Groq | Cascata de três modelos com timeout | `app/chatbot.py` |
@@ -113,12 +113,22 @@ principal com os turnos autorizados do usuário autenticado.
 | Status | Quando |
 |---|---|
 | `200` | Resposta da IA ou recusa de domínio |
-| `401` | `X-API-Key` ausente ou inválida (só quando `API_KEY` está configurada) |
+| `400` | `AI_UNSAFE_INPUT`: a entrada tenta alterar ou revelar regras internas (prompt injection) |
+| `401` | `X-Service-Key`/`X-API-Key` ausente ou inválida (só quando `SERVICE_API_KEY` ou `API_KEY` está configurada) |
 | `422` | Entrada fora dos limites de validação |
-| `429` | Rate limit por IP excedido — respeite o header `Retry-After` |
+| `429` | Rate limit excedido (por `X-MeatShop-User` ou, sem ele, por IP) — respeite o header `Retry-After` |
 | `503` | Nenhum modelo conseguiu responder — o cliente pode tentar novamente |
 
-O corpo é sempre `{ "response": "..." }` em `200` e `503`.
+O corpo é sempre `{ "response": "..." }` em `200` e `503`. Em `/chat`, tentativas de prompt
+injection recebem `200` com uma recusa local; o `400` é usado por `/recipe-drafts`:
+
+```json
+{ "code": "AI_UNSAFE_INPUT", "detail": "A solicitação contém instruções que não podem ser processadas.", "request_id": "..." }
+```
+
+Antes de qualquer chamada ao provedor, mensagem e histórico passam por redação local de
+dados pessoais (e-mail, CPF, telefone, CEP, endereço e nome quando apresentado, como em
+"meu nome é ..."). A mesma redação é aplicada à resposta do modelo.
 
 **Limites de entrada**
 
@@ -158,10 +168,10 @@ Copie `.env.example` para `.env` e preencha:
 | Variável | Obrigatória | Padrão | Descrição |
 |---|---|---|---|
 | `GROQ_API_KEY` | Sim | — | Chave da API da Groq |
-| `ALLOWED_ORIGINS` | Não | `*` | Origens do CORS separadas por vírgula |
+| `ALLOWED_ORIGINS` | Não | vazio (nenhuma origem) | Origens do CORS separadas por vírgula. Vazio bloqueia chamadas de navegador; o backend não depende de CORS |
 | `API_KEY` | Não | vazio | Segredo exigido no header `X-API-Key`. Vazio desliga a checagem |
 | `SERVICE_API_KEY` | Produção | vazio | Segredo interno exigido no header `X-Service-Key` |
-| `ENVIRONMENT` | Não | `development` | Em `production`, impede chamadas sem credencial interna |
+| `ENVIRONMENT` | Não | `development` | Em `production`, impede chamadas sem credencial interna e desliga `/docs`, `/redoc` e `/openapi.json` |
 | `RATE_LIMIT_REQUESTS` | Não | `20` | Requisições permitidas por janela |
 | `RATE_LIMIT_WINDOW_SECONDS` | Não | `60` | Duração da janela |
 | `CACHE_TTL_SECONDS` | Não | `3600` | Vida das respostas em cache. `0` desliga |
@@ -185,7 +195,7 @@ pip install -r requirements-dev.txt
 uvicorn app.main:app --reload
 ```
 
-Documentação interativa em `http://127.0.0.1:8000/docs`.
+Documentação interativa em `http://127.0.0.1:8000/docs` (indisponível com `ENVIRONMENT=production`).
 
 ---
 
@@ -202,7 +212,8 @@ Cobertura da suíte:
 |---|---|
 | `tests/test_filter.py` | Falsos positivos e negativos do filtro de domínio |
 | `tests/test_chatbot.py` | Cascata de modelos, cache, histórico e streaming |
-| `tests/test_api.py` | Contrato HTTP, rate limit, credencial e CORS |
+| `tests/test_api.py` | Contrato HTTP, rate limit, credencial, CORS e docs em produção |
+| `tests/test_safety.py` | Prompt injection e redação de dados pessoais |
 | `tests/test_ratelimit.py` | Janela deslizante, expiração e isolamento por chave |
 | `tests/test_cache.py` | TTL, descarte do menos usado e desligamento |
 
