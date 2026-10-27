@@ -21,6 +21,9 @@ e este projeto segue o [Versionamento Semântico](https://semver.org/lang/pt-BR/
 - README e `.env.example` corrigidos: `ALLOWED_ORIGINS` vazio por padrão, rate limit por `X-MeatShop-User` com IP como alternativa e erro `400 AI_UNSAFE_INPUT` documentado.
 - Manifesto Render no plano gratuito e na branch `main`.
 
+### Security
+- Dependências atualizadas para versões sem vulnerabilidades conhecidas apontadas pelo `pip-audit`: `fastapi` 0.162, `starlette` 1.3.1 ou superior e `python-dotenv` 1.2.2 ou superior.
+
 ### Removed
 - Arquivo vazio e sem uso `data/receitas.txt`.
 
