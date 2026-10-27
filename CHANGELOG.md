@@ -9,6 +9,24 @@ e este projeto segue o [Versionamento Semântico](https://semver.org/lang/pt-BR/
 
 ## [Projeto ainda não publicado]
 
+## [3.1.0] - 2026-10-26
+### Privacidade reforçada e documentação alinhada
+
+### Added
+- Remoção de nomes apresentados pelo usuário e de endereços (logradouro com número e CEP) na mensagem, no histórico e na resposta, além de e-mail, CPF e telefone.
+- Normalização Unicode antes da sanitização, cobrindo acentos decompostos e sobrenomes em minúsculas, sem afetar nomes de cortes.
+
+### Changed
+- `/docs`, `/redoc` e `/openapi.json` desativados quando `ENVIRONMENT=production`.
+- README e `.env.example` corrigidos: `ALLOWED_ORIGINS` vazio por padrão, rate limit por `X-MeatShop-User` com IP como alternativa e erro `400 AI_UNSAFE_INPUT` documentado.
+- Manifesto Render no plano gratuito e na branch `main`.
+
+### Security
+- Dependências atualizadas para versões sem vulnerabilidades conhecidas apontadas pelo `pip-audit`: `fastapi` 0.162, `starlette` 1.3.1 ou superior e `python-dotenv` 1.2.2 ou superior.
+
+### Removed
+- Arquivo vazio e sem uso `data/receitas.txt`.
+
 ## [3.0.0] - 2026-10-09
 ### Integração segura com backend e copiloto de receitas
 
