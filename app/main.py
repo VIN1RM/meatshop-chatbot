@@ -20,6 +20,7 @@ from app.chatbot import (
     stream_response,
 )
 from app.ratelimit import SlidingWindowRateLimiter
+from app.safety import redact_sensitive
 from app.schemas import ChatRequest, ChatResponse, RecipeDraftRequest, RecipeDraftResponse
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -51,7 +52,18 @@ async def lifespan(app: FastAPI):
         yield
 
 
-app = FastAPI(title="MeatShop Chatbot API", version="3.0.0", lifespan=lifespan)
+def docs_urls(environment: str) -> dict[str, str | None]:
+    if environment.strip().lower() == "production":
+        return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    return {"docs_url": "/docs", "redoc_url": "/redoc", "openapi_url": "/openapi.json"}
+
+
+app = FastAPI(
+    title="MeatShop Chatbot API",
+    version="3.1.0",
+    lifespan=lifespan,
+    **docs_urls(ENVIRONMENT),
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -191,7 +203,8 @@ async def chat_stream(req: ChatRequest, request: Request):
             async for delta in stream_response(
                 request.app.state.http_client, req.message, req.history
             ):
-                yield f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+                safe_delta = redact_sensitive(delta)
+                yield f"data: {json.dumps({'delta': safe_delta}, ensure_ascii=False)}\n\n"
         except ChatUnavailableError:
             # A resposta já começou, então o erro vai como evento — não como status HTTP.
             yield f"data: {json.dumps({'error': UNAVAILABLE_MESSAGE}, ensure_ascii=False)}\n\n"
