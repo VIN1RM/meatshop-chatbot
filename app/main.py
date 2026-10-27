@@ -60,7 +60,7 @@ def docs_urls(environment: str) -> dict[str, str | None]:
 
 app = FastAPI(
     title="MeatShop Chatbot API",
-    version="3.0.0",
+    version="3.1.0",
     lifespan=lifespan,
     **docs_urls(ENVIRONMENT),
 )
